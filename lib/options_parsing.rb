@@ -4,6 +4,8 @@ class Options
   def self.parse_args
     return @options if @options
 
+    @no_args = ARGV.empty? ? true : false
+
     @options = {}
     optparse = OptionParser.new do|opts|
       # Set a banner
@@ -54,13 +56,8 @@ class Options
         @options[:type] = type
       end
 
-      valid_pe = %w{1.0 1.1 1.2 1.2.3 1.2.4 2.0 2.0.0}
       @options[:pe_version] = nil
-      opts.on('--pe-version version', 'Specify PE version to install') do |ver|
-        unless valid_pe.include? ver
-          Log.error "Sorry #{ver} is not a valid PE version"
-          exit 1
-        end
+      opts.on('--pe-version version', 'Specify PE version to install, e.g.: 1.2.4 or 2.0.0') do |ver|
         @options[:pe_version] = ver
       end
 
@@ -176,8 +173,20 @@ class Options
         puts opts
         exit
       end
+
+      @options[:pre_script] = false
+      opts.on('--pre PATH/TO/SCRIPT', 'Pass steps to be run prior to setup') do |step|
+        @options[:pre_script] = step
+      end
     end
+
     optparse.parse!
+
+    # We have use the @no_args var because OptParse consumes ARGV as it parses
+    # so we have to check the value of ARGV at the begining of the method,
+    # let the options be set, then output usage.
+    puts optparse if @no_args
+
     raise ArgumentError.new("Must specify the --type argument") unless @options[:type]
 
     @options[:tests] << 'tests' if @options[:tests].empty?

@@ -34,7 +34,7 @@ def install_from_git(host, package, repo, revision)
   target = "#{SourcePath}/#{package}"
 
   step "Clone #{repo} if needed"
-  on host, "test -d #{SourcePath} || mkdir #{SourcePath}"
+  on host, "test -d #{SourcePath} || mkdir -p #{SourcePath}"
   on host, "test -d #{target} || git clone #{repo} #{target}"
 
   step "Update #{package} and check out revision #{revision}"
@@ -99,5 +99,5 @@ end
 
 agents.each do |agent|
   puppetconf = File.join(agent['puppetpath'], 'puppet.conf')
-  on agent, "echo [agent] >> #{puppetconf} && echo server=#{role_master} >> #{puppetconf}"
+  on agent, "echo [agent] > #{puppetconf} && echo server=#{role_master} >> #{puppetconf}"
 end

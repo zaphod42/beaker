@@ -1,5 +1,5 @@
 class TestCase
-  require 'lib/test_case/host'
+  require 'lib/host'
   require 'tempfile'
   require 'benchmark'
   require 'stringio'
@@ -32,6 +32,7 @@ class TestCase
               @test_status = :fail
               @exception   = e
             rescue StandardError, ScriptError => e
+              Log.error(e.inspect)
               e.backtrace.each { |line| Log.error(line) }
               @test_status = :error
               @exception   = e
@@ -89,8 +90,6 @@ class TestCase
   #
   attr_reader :result
   def on(host, command, options={}, &block)
-    options[:acceptable_exit_codes] ||= [0]
-    options[:failing_exit_codes]    ||= [1]
     if command.is_a? String
       command = Command.new(command)
     end
@@ -98,17 +97,6 @@ class TestCase
       host.map { |h| on h, command, options, &block }
     else
       @result = command.exec(host, options)
-
-      unless options[:silent] then
-        result.log
-        if options[:acceptable_exit_codes].include?(exit_code)
-          # cool.
-        elsif options[:failing_exit_codes].include?(exit_code)
-          assert( false, "Host '#{host} exited with #{exit_code} running: #{command.cmd_line('')}" )
-        else
-          raise "Host '#{host}' exited with #{exit_code} running: #{command.cmd_line('')}"
-        end
-      end
 
       # Also, let additional checking be performed by the caller.
       yield if block_given?
@@ -135,7 +123,7 @@ class TestCase
     @test_status = :skip
   end
   def fail_test(msg)
-    assert(false, msg)
+    flunk(msg + "\n" + Log.pretty_backtrace() + "\n")
   end
   #
   # result access
@@ -200,11 +188,33 @@ class TestCase
     HostCommand.new(command_string)
   end
 
+  # method apply_manifest_on
+  # runs a 'puppet apply' command on a remote host
+  # parameters:
+  # [host] an instance of Host which contains the info about the host that this command should be run on
+  # [manifest] a string containing a puppet manifest to apply
+  # [options] an optional hash containing options; legal values include:
+  #   :acceptable_exit_codes => an array of integer exit codes that should be considered acceptable.  an error will be
+  #     thrown if the exit code does not match one of the values in this list.
+  #   :parseonly => any value.  If this key exists in the Hash, the "--parseonly" command line parameter will be
+  #     passed to the 'puppet apply' command.
+  #   :environment => a Hash containing string->string key value pairs.  These will be treated as extra environment
+  #     variables that should be set before running the puppet command.
+  # [&block] this method will yield to a block of code passed by the caller; this can be used for additional validation,
+  #     etc.
   def apply_manifest_on(host,manifest,options={},&block)
     on_options = {:stdin => manifest + "\n"}
     on_options[:acceptable_exit_codes] = options.delete(:acceptable_exit_codes) if options.keys.include?(:acceptable_exit_codes)
     args = ["--verbose"]
     args << "--parseonly" if options[:parseonly]
+
+    # Not really thrilled with this implementation, might want to improve it later.  Basically, there is a magic
+    # trick in the constructor of PuppetCommand which allows you to pass in a Hash for the last value in the *args
+    # Array; if you do so, it will be treated specially.  So, here we check to see if our caller passed us a hash
+    # of environment variables that they want to set for the puppet command.  If so, we set the final value of
+    # *args to a new hash with just one entry (the value of which is our environment variables hash)
+    args << { :environment => options[:environment]} if options.has_key?(:environment)
+
     on host, puppet_apply(*args), on_options, &block
   end
 
@@ -247,11 +257,35 @@ class TestCase
     end
   end
 
+  # This method performs the following steps:
+  # 1. issues start command for puppet master on specified host
+  # 2. polls until it determines that the master has started successfully
+  # 3. yields to a block of code passed by the caller
+  # 4. runs a "kill" command on the master's pid (on the specified host)
+  # 5. polls until it determines that the master has shut down successfully.
+  #
+  # Parameters:
+  # [host] the master host
+  # [arg] a string containing all of the command line arguments that you would like for the puppet master to
+  #     be started with.  Defaults to '--daemonize'.  NOTE: the following values will be added to the argument list
+  #     if they are not explicitly set in your 'args' parameter:
+  # * --daemonize
+  # * --logdest="#{host['puppetvardir']}/log/puppetmaster.log"
+  # * --dns_alt_names="puppet, $(hostname -s), $(hostname -f)"
   def with_master_running_on(host, arg='--daemonize', &block)
+    # they probably want to run with daemonize.  If they pass some other arg/args but forget to re-include
+    # daemonize, we'll check and make sure they didn't explicitly specify "no-daemonize", and, failing that,
+    # we'll add daemonize to the arg string
+    if (arg !~ /(?:--daemonize)|(?:--no-daemonize)/) then arg << " --daemonize" end
+
+    if (arg !~ /--logdest/) then arg << " --logdest=\"#{master['puppetvardir']}/log/puppetmaster.log\"" end
+    if (arg !~ /--dns_alt_names/) then arg << " --dns_alt_names=\"puppet, $(hostname -s), $(hostname -f)\"" end
+
     on hosts, host_command('rm -rf #{host["puppetpath"]}/ssl')
     agents.each do |agent|
       if vardir = agent['puppetvardir']
-        on agent, "rm -rf #{vardir}/*"
+        # we want to remove everything except the log directory
+        on agent, "if [ -e \"#{vardir}\" ]; then for f in #{vardir}/*; do if [ \"$f\" != \"#{vardir}/log\" ]; then rm -rf \"$f\"; fi; done; fi"
       end
     end
 
@@ -321,4 +355,5 @@ class TestCase
 
     return result
   end
+
 end
